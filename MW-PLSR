@@ -1,0 +1,198 @@
+require(dplyr)
+require(pls)
+require(plsVarSel)
+require(reshape2)
+require(ggplot2)
+require(lubridate)
+
+###############
+#pine
+###############
+all_stats_pine<-read.table("/Users/danielbalanzategui/Documents/1_Active_study/_0_TERENO/v8/1_input_data/PUP_dR_out_april_2020_extra_clean_april_2020_edits.txt", header=TRUE, sep="\t")
+all_stats_pine<-all_stats_pine[,c(1,9,42:44,22,55,66,23)]
+colnames(all_stats_pine)<-c("begin_ymd","magnitude_dt","HIN_TEMP","HIN_RH","HIN_VPD","S_RAD","SMmean","STmean","year")
+
+all_stats_pine_scaled_EV<-scale(all_stats_pine[,c(2:8)])
+colnames(all_stats_pine_scaled_EV)<-c("magnitude_dt_sc","HIN_TEMP_sc","HIN_RH_sc","HIN_VPD_sc","S_RAD_sc","SMmean_sc","STmean_sc")
+all_stats_pine<-cbind(all_stats_pine,all_stats_pine_scaled_EV)
+
+###############
+#sub-annual plsr analysis
+###############
+pine_sub_annual<-all_stats_pine
+pine_sub_annual$begin_ymd<-ymd(pine_sub_annual$begin_ymd)
+pine_sub_annual$year<-year(pine_sub_annual$begin_ymd)
+
+#############
+#2017
+#############
+pine_sub_annual_2017 <- pine_sub_annual %>%
+                  dplyr::filter(year==2017)
+pine_sub_annual_2017$SMmean_sc<-na.approx(pine_sub_annual_2017$SMmean_sc)
+pine_sub_annual_2017$STmean_sc<-na.approx(pine_sub_annual_2017$STmean_sc)
+pine_start_2017<-pine_sub_annual_2017[1,1]
+
+
+##########
+#win_01
+##########
+#R2
+#step 1: subset
+#moving window PLSR subset data, 60 day window
+pine_2017_win_00 <- pine_sub_annual_2017 %>%
+              dplyr::filter(begin_ymd >= pine_start_2017 & begin_ymd <= pine_start_2017+60)
+
+#step 2: run PLSR
+#PLSR function
+pine_2017_win_00_pls<-plsr(magnitude_dt_sc~HIN_TEMP_sc+HIN_RH_sc+HIN_VPD_sc+S_RAD_sc+SMmean_sc+STmean_sc,
+                            data=pine_2017_win_00,scale=FALSE, 
+                            validation = "CV",na.action = na.omit,jackknife=TRUE)
+
+#step 3: extract training and cross-validated R2
+pine_2017_win_00_pls_R2y<-R2(pine_2017_win_00_pls,estimate="all", ncomp=1)
+pine_2017_win_00_pls_R2y<-as.data.frame(pine_2017_win_00_pls_R2y$val)
+pine_2017_win_00_pls_R2y_TR1<-round(pine_2017_win_00_pls_R2y[1,2]*100,2)
+pine_2017_win_00_pls_R2y_CV1<-round(pine_2017_win_00_pls_R2y[2,2]*100,2)
+
+#step 3: get number of observations in the model
+#although we have subset 61 days worth of data, there maybe some gaps, so model n is not always 61
+model_n<-nrow(na.omit(pine_2017_win_00))
+
+#step 4: bring together the R2 results
+pine_2017_win_00_pls_stats<-as.data.frame(
+  cbind(pine_2017_win_00_pls_R2y_TR1,pine_2017_win_00_pls_R2y_CV1,nrow(na.omit(pine_2017_win_00))))
+colnames(pine_2017_win_00_pls_stats)<-c("R2y_TR1","R2y_CV1","model_n") 
+
+#step 5: add date of moving window for plotting later (here +30 - centred date for the 61 day moving interval)
+pine_2017_win_00_pls_stats$window_date<-as.Date(pine_start_2017)+30
+
+#step 6: add id index for the window
+pine_2017_win_00_pls_stats$window<-"win_00"
+
+#extract regression coefficients, scale regression coefficents as a percentage of the explained variance 
+#step 1: extract regression coefficients
+pine_2017_win_00_pls_RC1<-RC(pine_2017_win_00_pls, opt.comp=1)
+
+#step 2: proportion of the cumsum of regression coefficients to R2 
+pine_2017_win_00_pls_RC1_sum<-cumsum(pine_2017_win_00_pls_RC1)
+pine_2017_win_00_r2_sum<-(pine_2017_win_00_pls_stats$R2y_CV1/100)/pine_2017_win_00_pls_RC1_sum[6]
+
+#step 3: scale regression coefficients to R2
+pine_2017_win_00_rel_RC1<-as.data.frame(pine_2017_win_00_pls$coefficients[1:6]*pine_2017_win_00_r2_sum)
+
+#step 4: add parameters
+pine_2017_win_00_rel_RC1$param<-c("HIN_TEMP_sc","HIN_RH_sc","HIN_VPD_sc","S_RAD_sc","SMmean_sc","STmean_sc")
+
+#step 5: add date of moving window for plotting later (here +30 - centred date for the 61 day moving interval)
+pine_2017_win_00_rel_RC1$window_date<-as.Date(pine_start_2017)+30
+
+#step 6: add id index for the window
+pine_2017_win_00_rel_RC1$window<-"win_00"
+pine_2017_win_00_rel_RC1$RC_orig<-pine_2017_win_00_pls$coefficients[1:6]
+colnames(pine_2017_win_00_rel_RC1)<-c("RC_R2_weight","param","window_date","window",'RC_orig')
+
+#step 7: scaled regression coefficients as a percentage of R2
+pine_2017_win_00_rel_RC1$RC_R2_rel<-pine_2017_win_00_rel_RC1$RC_R2_weight/(pine_2017_win_00_pls_stats$R2y_CV1/100)
+
+##########
+#win_01
+##########
+pine_2017_win_01 <- pine_sub_annual_2017 %>%
+              dplyr::filter(begin_ymd >= pine_start_2017+1 & begin_ymd <= pine_start_2017+61)
+pine_2017_win_01_pls<-plsr(magnitude_dt_sc~HIN_TEMP_sc+HIN_RH_sc+HIN_VPD_sc+S_RAD_sc+SMmean_sc+STmean_sc,
+                            data=pine_2017_win_01,scale=FALSE, 
+                            validation = "CV",na.action = na.omit,jackknife=TRUE)
+pine_2017_win_01_pls_R2y<-R2(pine_2017_win_01_pls,estimate="all", ncomp=1)
+pine_2017_win_01_pls_R2y<-as.data.frame(pine_2017_win_01_pls_R2y$val)
+pine_2017_win_01_pls_R2y_TR1<-round(pine_2017_win_01_pls_R2y[1,2]*100,2)
+pine_2017_win_01_pls_R2y_CV1<-round(pine_2017_win_01_pls_R2y[2,2]*100,2)
+pine_2017_win_01_pls_stats<-as.data.frame(
+  cbind(pine_2017_win_01_pls_R2y_TR1,pine_2017_win_01_pls_R2y_CV1,nrow(na.omit(pine_2017_win_01))))
+colnames(pine_2017_win_01_pls_stats)<-c("R2y_TR1","R2y_CV1","model_n") 
+pine_2017_win_01_pls_stats$window_date<-as.Date(pine_start_2017)+31
+pine_2017_win_01_pls_stats$window<-"win_01"
+
+pine_2017_win_01_pls_RC1<-RC(pine_2017_win_01_pls, opt.comp=1)
+pine_2017_win_01_pls_RC1_sum<-cumsum(pine_2017_win_01_pls_RC1)
+pine_2017_win_01_r2_sum<-(pine_2017_win_01_pls_stats$R2y_CV1/100)/pine_2017_win_01_pls_RC1_sum[6]
+pine_2017_win_01_rel_RC1<-as.data.frame(pine_2017_win_01_pls$coefficients[1:6]*pine_2017_win_01_r2_sum)
+pine_2017_win_01_rel_RC1$param<-c("HIN_TEMP_sc","HIN_RH_sc","HIN_VPD_sc","S_RAD_sc","SMmean_sc","STmean_sc")
+pine_2017_win_01_rel_RC1$window_date<-as.Date(pine_start_2017)+31
+pine_2017_win_01_rel_RC1$window<-"win_01"
+pine_2017_win_01_rel_RC1$RC_orig<-pine_2017_win_01_pls$coefficients[1:6]
+colnames(pine_2017_win_01_rel_RC1)<-c("RC_R2_weight","param","window_date","window",'RC_orig')
+pine_2017_win_01_rel_RC1$RC_R2_rel<-pine_2017_win_01_rel_RC1$RC_R2_weight/(pine_2017_win_01_pls_stats$R2y_CV1/100)
+
+#win_02
+pine_2017_win_02 <- pine_sub_annual_2017 %>%
+              dplyr::filter(begin_ymd >= pine_start_2017+2 & begin_ymd <= pine_start_2017+62)
+pine_2017_win_02_pls<-plsr(magnitude_dt_sc~HIN_TEMP_sc+HIN_RH_sc+HIN_VPD_sc+S_RAD_sc+SMmean_sc+STmean_sc,
+                            data=pine_2017_win_02,scale=FALSE, 
+                            validation = "CV",na.action = na.omit,jackknife=TRUE)
+pine_2017_win_02_pls_R2y<-R2(pine_2017_win_02_pls,estimate="all", ncomp=1)
+pine_2017_win_02_pls_R2y<-as.data.frame(pine_2017_win_02_pls_R2y$val)
+pine_2017_win_02_pls_R2y_TR1<-round(pine_2017_win_02_pls_R2y[1,2]*100,2)
+pine_2017_win_02_pls_R2y_CV1<-round(pine_2017_win_02_pls_R2y[2,2]*100,2)
+pine_2017_win_02_pls_stats<-as.data.frame(
+  cbind(pine_2017_win_02_pls_R2y_TR1,pine_2017_win_02_pls_R2y_CV1,nrow(na.omit(pine_2017_win_02))))
+colnames(pine_2017_win_02_pls_stats)<-c("R2y_TR1","R2y_CV1","model_n") 
+pine_2017_win_02_pls_stats$window_date<-as.Date(pine_start_2017)+32
+pine_2017_win_02_pls_stats$window<-"win_02"
+
+pine_2017_win_02_pls_RC1<-RC(pine_2017_win_02_pls, opt.comp=1)
+pine_2017_win_02_pls_RC1_sum<-cumsum(pine_2017_win_02_pls_RC1)
+pine_2017_win_02_r2_sum<-(pine_2017_win_02_pls_stats$R2y_CV1/100)/pine_2017_win_02_pls_RC1_sum[6]
+pine_2017_win_02_rel_RC1<-as.data.frame(pine_2017_win_02_pls$coefficients[1:6]*pine_2017_win_02_r2_sum)
+pine_2017_win_02_rel_RC1$param<-c("HIN_TEMP_sc","HIN_RH_sc","HIN_VPD_sc","S_RAD_sc","SMmean_sc","STmean_sc")
+pine_2017_win_02_rel_RC1$window_date<-as.Date(pine_start_2017)+32
+pine_2017_win_02_rel_RC1$window<-"win_02"
+pine_2017_win_02_rel_RC1$RC_orig<-pine_2017_win_02_pls$coefficients[1:6]
+colnames(pine_2017_win_02_rel_RC1)<-c("RC_R2_weight","param","window_date","window",'RC_orig')
+pine_2017_win_02_rel_RC1$RC_R2_rel<-pine_2017_win_02_rel_RC1$RC_R2_weight/(pine_2017_win_02_pls_stats$R2y_CV1/100)
+
+
+#win_03
+pine_2017_win_03 <- pine_sub_annual_2017 %>%
+              dplyr::filter(begin_ymd >= pine_start_2017+3 & begin_ymd <= pine_start_2017+63)
+pine_2017_win_03_pls<-plsr(magnitude_dt_sc~HIN_TEMP_sc+HIN_RH_sc+HIN_VPD_sc+S_RAD_sc+SMmean_sc+STmean_sc,
+                            data=pine_2017_win_03,scale=FALSE, 
+                            validation = "CV",na.action = na.omit,jackknife=TRUE)
+pine_2017_win_03_pls_R2y<-R2(pine_2017_win_03_pls,estimate="all", ncomp=1)
+pine_2017_win_03_pls_R2y<-as.data.frame(pine_2017_win_03_pls_R2y$val)
+pine_2017_win_03_pls_R2y_TR1<-round(pine_2017_win_03_pls_R2y[1,2]*100,2)
+pine_2017_win_03_pls_R2y_CV1<-round(pine_2017_win_03_pls_R2y[2,2]*100,2)
+pine_2017_win_03_pls_stats<-as.data.frame(
+  cbind(pine_2017_win_03_pls_R2y_TR1,pine_2017_win_03_pls_R2y_CV1,nrow(na.omit(pine_2017_win_03))))
+colnames(pine_2017_win_03_pls_stats)<-c("R2y_TR1","R2y_CV1","model_n") 
+pine_2017_win_03_pls_stats$window_date<-as.Date(pine_start_2017)+33
+pine_2017_win_03_pls_stats$window<-"win_03"
+
+pine_2017_win_03_pls_RC1<-RC(pine_2017_win_03_pls, opt.comp=1)
+pine_2017_win_03_pls_RC1_sum<-cumsum(pine_2017_win_03_pls_RC1)
+pine_2017_win_03_r2_sum<-(pine_2017_win_03_pls_stats$R2y_CV1/100)/pine_2017_win_03_pls_RC1_sum[6]
+pine_2017_win_03_rel_RC1<-as.data.frame(pine_2017_win_03_pls$coefficients[1:6]*pine_2017_win_03_r2_sum)
+pine_2017_win_03_rel_RC1$param<-c("HIN_TEMP_sc","HIN_RH_sc","HIN_VPD_sc","S_RAD_sc","SMmean_sc","STmean_sc")
+pine_2017_win_03_rel_RC1$window_date<-as.Date(pine_start_2017)+33
+pine_2017_win_03_rel_RC1$window<-"win_03"
+pine_2017_win_03_rel_RC1$RC_orig<-pine_2017_win_03_pls$coefficients[1:6]
+colnames(pine_2017_win_03_rel_RC1)<-c("RC_R2_weight","param","window_date","window",'RC_orig')
+pine_2017_win_03_rel_RC1$RC_R2_rel<-pine_2017_win_03_rel_RC1$RC_R2_weight/(pine_2017_win_03_pls_stats$R2y_CV1/100)
+
+###################
+#summarise the results
+###################
+pine_2017_R2_results<-rbind(pine_2017_win_00_pls_stats,
+                            pine_2017_win_01_pls_stats,
+                            pine_2017_win_02_pls_stats,
+                            pine_2017_win_03_pls_stats)
+#final table for plotting
+pine_2017_R2_results$species<-"Pine"
+
+
+pine_2017_RC_results<-rbind(pine_2017_win_00_rel_RC1,
+                            pine_2017_win_01_rel_RC1,
+                            pine_2017_win_02_rel_RC1,
+                            pine_2017_win_03_rel_RC1)
+#final table for plotting
+pine_2017_RC_results$species<-"Pine"
+
